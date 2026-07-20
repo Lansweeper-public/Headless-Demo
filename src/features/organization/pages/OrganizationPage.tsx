@@ -68,7 +68,7 @@ export function OrganizationPage() {
       {isLoading ? (
         <div style={{ textAlign: 'center', padding: 64 }}><Spin size="large" /></div>
       ) : !sites?.length ? (
-        <Empty description="No sites in this organization yet. Provision one with scripts/Install-LansweeperItAgent.ps1." />
+        <Empty description={'No sites in this organization yet. Click "Create site" above to add one.'} />
       ) : (
         <Row gutter={[16, 16]}>
           {sites.map((site) => (
