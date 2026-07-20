@@ -1,0 +1,7 @@
+{
+  "_comment": "Lansweeper Platform API ORGANIZATION credentials. Copy this file to 'lansweeper.config.json' and fill in your values (from the Platform API request form). Used by BOTH the demo dev server (vite.config.ts) and scripts/Install-LansweeperItAgent.ps1. The real file is gitignored and read server-side only (never bundled into the browser).",
+  "clientId": "your-organization-client-id",
+  "clientSecret": "your-organization-client-secret",
+  "organizationId": "your-organization-id",
+  "apiBase": "https://api.lansweeper.com"
+}
