@@ -64,6 +64,80 @@ const zipStore = (files: { name: string; data: Buffer }[]): Buffer => {
   return Buffer.concat([localBuf, centralBuf, end])
 }
 
+const siteLabel = (siteId: string, name: string | null) => (name ? `"${name}" [${siteId}]` : `[${siteId}]`)
+
+// macOS IT Agent installer (downloads the pkg + config, injects the linking code, installs).
+// See https://developer.lansweeper.com/docs/platform-api/guides/install-it-agent/
+const macInstallScript = (linkingCode: string, siteId: string, name: string | null): string => `#!/usr/bin/env bash
+# Lansweeper IT Agent installer for macOS — pre-linked to ${siteLabel(siteId, name)}.
+set -euo pipefail
+
+CLOUDTOKEN="${linkingCode}"
+INSTALLER_URL="https://download.lansweeper.com/stable/MAC/it-agent-discovery-pkg/latest"
+CONFIG_URL="https://download.lansweeper.com/stable/MAC/pkg-scripts/it-agent-discovery-stable/latest"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This installer must run as root — re-run with: sudo bash $0"
+  exit 1
+fi
+
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+echo "[1/3] Downloading the IT Agent installer..."
+curl -fL "$INSTALLER_URL" -o "$WORKDIR/it-agent-discovery.pkg"
+curl -fL "$CONFIG_URL" -o "$WORKDIR/it-agent-config.sh"
+
+echo "[2/3] Applying linking code..."
+sed -i.bak "s/cloudtokenvalue/$CLOUDTOKEN/g" "$WORKDIR/it-agent-config.sh"
+rm -f "$WORKDIR/it-agent-config.sh.bak"
+
+echo "[3/3] Installing..."
+installer -pkg "$WORKDIR/it-agent-discovery.pkg" -target /
+bash "$WORKDIR/it-agent-config.sh"
+
+echo "Done. The IT Agent is installed and linked to ${siteLabel(siteId, name)}."
+`
+
+// Linux IT Agent installer (repository package + apt/dnf install with LINKING_CODE).
+const linuxInstallScript = (linkingCode: string, siteId: string, name: string | null): string => `#!/usr/bin/env bash
+# Lansweeper IT Agent installer for Linux — pre-linked to ${siteLabel(siteId, name)}.
+set -euo pipefail
+
+LINKING_CODE="${linkingCode}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This installer must run as root — re-run with: sudo bash $0"
+  exit 1
+fi
+
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+if command -v apt-get >/dev/null 2>&1; then
+  echo "[1/3] Downloading the Lansweeper deb repository package..."
+  curl -fL -o "$WORKDIR/lansweeper-repository.deb" https://download.lansweeper.com/deb-repository/stable/latest
+  echo "[2/3] Registering the repository..."
+  dpkg -i "$WORKDIR/lansweeper-repository.deb" || apt-get -f install -y
+  apt-get update
+  echo "[3/3] Installing the IT Agent..."
+  env LINKING_CODE="$LINKING_CODE" apt-get install -y lansweeper-it-agent
+elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+  PKG="$(command -v dnf || command -v yum)"
+  echo "[1/3] Downloading the Lansweeper rpm repository package..."
+  curl -fL -o "$WORKDIR/lansweeper-repository.rpm" https://download.lansweeper.com/rpm-repository/stable/latest
+  echo "[2/3] Registering the repository..."
+  "$PKG" install -y "$WORKDIR/lansweeper-repository.rpm"
+  echo "[3/3] Installing the IT Agent..."
+  env LINKING_CODE="$LINKING_CODE" "$PKG" install -y lansweeper-it-agent
+else
+  echo "No supported package manager found (need apt, dnf, or yum)."
+  exit 1
+fi
+
+echo "Done. The IT Agent is installed and linked to ${siteLabel(siteId, name)}."
+`
+
 interface OrgConfig { clientId?: string; clientSecret?: string; organizationId?: string; apiBase?: string }
 
 // Shared config (org credentials + apiBase), also consumed by the provisioning script.
@@ -382,6 +456,8 @@ export default defineConfig(() => {
               const url = new URL(req.url ?? '', 'http://localhost')
               const siteId = url.searchParams.get('siteId') || ''
               if (!siteId) throw new Error('Missing siteId.')
+              const os = (url.searchParams.get('os') || 'windows').toLowerCase()
+              if (!['windows', 'mac', 'linux'].includes(os)) throw new Error(`Unsupported os '${os}' (expected windows, mac, or linux).`)
 
               const token = await ensureToken(siteId)
               const codeResp = await orgGraphql<{ data?: { orgSite?: { linkingCode?: string } }; errors?: unknown }>(
@@ -398,25 +474,41 @@ export default defineConfig(() => {
                 name = nameResp?.data?.orgSite?.name ?? null
               } catch { /* name is best-effort */ }
 
-              const script = fs.readFileSync(path.resolve(process.cwd(), 'scripts', 'Install-LansweeperItAgent.ps1'))
+              // Pick the OS-appropriate installer. Windows uses the bundled PowerShell script
+              // (which reads lansweeper-site.json); mac/linux use a generated shell script with
+              // the linking code baked in.
+              let scriptName: string
+              let scriptData: Buffer
+              if (os === 'mac') {
+                scriptName = 'install-lansweeper-it-agent.sh'
+                scriptData = Buffer.from(macInstallScript(linkingCode, siteId, name), 'utf8')
+              } else if (os === 'linux') {
+                scriptName = 'install-lansweeper-it-agent.sh'
+                scriptData = Buffer.from(linuxInstallScript(linkingCode, siteId, name), 'utf8')
+              } else {
+                scriptName = 'Install-LansweeperItAgent.ps1'
+                scriptData = fs.readFileSync(path.resolve(process.cwd(), 'scripts', 'Install-LansweeperItAgent.ps1'))
+              }
+
               const siteConfig = Buffer.from(
                 JSON.stringify({
                   siteId,
                   name,
+                  os,
                   integrationKey: siteId,
                   linkingCode,
                   apiBase: LS_API,
-                  note: 'Downloaded from the Lansweeper headless demo. Keep this next to Install-LansweeperItAgent.ps1; running the script installs an agent linked to this site (no org credentials needed).',
+                  note: `Downloaded from the Lansweeper headless demo. Keep this next to ${scriptName}; running the script installs an IT Agent linked to this site (no org credentials needed).`,
                 }, null, 2) + '\n',
                 'utf8'
               )
 
               const zip = zipStore([
-                { name: 'Install-LansweeperItAgent.ps1', data: script },
+                { name: scriptName, data: scriptData },
                 { name: 'lansweeper-site.json', data: siteConfig },
               ])
               res.setHeader('content-type', 'application/zip')
-              res.setHeader('content-disposition', `attachment; filename="lansweeper-agent-${siteId.slice(0, 8)}.zip"`)
+              res.setHeader('content-disposition', `attachment; filename="lansweeper-agent-${os}-${siteId.slice(0, 8)}.zip"`)
               res.end(zip)
             })().catch((e: Error) => {
               res.statusCode = 500

@@ -1,5 +1,5 @@
-import { Typography, Card, Table, Tag, Space, Alert, Spin, Empty, Tooltip, Switch, Button, Popconfirm, message } from 'antd';
-import { ClusterOutlined, EyeOutlined, DownloadOutlined, DisconnectOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Typography, Card, Table, Tag, Space, Alert, Spin, Empty, Tooltip, Switch, Button, Dropdown, Popconfirm, message } from 'antd';
+import { ClusterOutlined, EyeOutlined, DownloadOutlined, DisconnectOutlined, ReloadOutlined, WindowsOutlined, AppleOutlined, LinuxOutlined } from '@ant-design/icons';
 import {
   useSourcesWithCounts,
   useDefaultScanningGroup,
@@ -78,6 +78,13 @@ export function SourcesPage() {
   const siteId = useActiveSite((s) => s.siteId);
   const unlinkSource = useUnlinkSource();
 
+  // The endpoint responds with a Content-Disposition attachment, so navigating to it
+  // downloads the OS-specific bundle without leaving the page.
+  const downloadBundle = (os: 'windows' | 'mac' | 'linux') => {
+    if (!siteId) return;
+    window.location.href = `/api/install-bundle?siteId=${encodeURIComponent(siteId)}&os=${os}`;
+  };
+
   const columns = [
     {
       title: 'Type',
@@ -155,16 +162,23 @@ export function SourcesPage() {
           <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>
             Refresh
           </Button>
-          <Tooltip title="Downloads a ZIP with the install script and a config pre-linked to this site — running it installs an agent that reports to this site.">
-            <Button
-              type="primary"
-              icon={<DownloadOutlined />}
-              href={siteId ? `/api/install-bundle?siteId=${encodeURIComponent(siteId)}` : undefined}
+          <Tooltip title="Downloads a ZIP with an OS-specific install script and a config pre-linked to this site — running it installs an agent that reports here.">
+            <Dropdown
+              trigger={['click']}
               disabled={!siteId}
-              download
+              menu={{
+                items: [
+                  { key: 'windows', icon: <WindowsOutlined />, label: 'Windows' },
+                  { key: 'mac', icon: <AppleOutlined />, label: 'macOS' },
+                  { key: 'linux', icon: <LinuxOutlined />, label: 'Linux' },
+                ],
+                onClick: ({ key }) => downloadBundle(key as 'windows' | 'mac' | 'linux'),
+              }}
             >
-              Install a new source
-            </Button>
+              <Button type="primary" icon={<DownloadOutlined />} disabled={!siteId}>
+                Install a new source
+              </Button>
+            </Dropdown>
           </Tooltip>
           <ApiInfo op="linkingCode" />
         </Space>
